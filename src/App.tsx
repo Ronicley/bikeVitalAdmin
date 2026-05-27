@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { AlertCircle, CheckCircle2, CreditCard, LogOut, MessageSquareWarning, RefreshCcw, ShieldCheck } from 'lucide-react'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
@@ -73,6 +73,16 @@ interface ApiFailure {
   }
 }
 
+class ApiRequestError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+  }
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:9000'
 const SESSION_STORAGE_KEY = 'bikevital.admin.session'
 
@@ -96,7 +106,7 @@ async function apiRequest<T>(path: string, init: RequestInit = {}, token?: strin
     } catch {
       // Ignore body parsing failures and keep generic message.
     }
-    throw new Error(message)
+    throw new ApiRequestError(response.status, message)
   }
 
   if (response.status === 204) {
@@ -121,13 +131,13 @@ function statusBadgeVariant(status: SubscriptionStatus | ComplaintStatus): 'succ
   return 'neutral'
 }
 
-function TabButton(props: { isActive: boolean; label: string; onClick: () => void }) {
+function SidebarMenuButton(props: { isActive: boolean; label: string; onClick: () => void }) {
   return (
     <Button
-      variant={props.isActive ? 'default' : 'outline'}
+      variant={props.isActive ? 'default' : 'ghost'}
       size="sm"
       onClick={props.onClick}
-      className="min-w-36"
+      className="w-full justify-start"
       type="button"
     >
       {props.label}
@@ -137,6 +147,7 @@ function TabButton(props: { isActive: boolean; label: string; onClick: () => voi
 
 function App() {
   const [session, setSession] = useState<SessionResponse | null>(null)
+  const refreshPromiseRef = useRef<Promise<SessionResponse> | null>(null)
   const [activeTab, setActiveTab] = useState<'billing' | 'password' | 'complaints'>('billing')
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
@@ -199,19 +210,104 @@ function App() {
       return
     }
 
-    void loadAdminData(token)
+    void loadAdminData()
   }, [token])
 
-  async function loadAdminData(accessToken: string): Promise<void> {
+  function clearAuthenticatedState(message?: string): void {
+    setSession(null)
+    setPlans([])
+    setSubscriptions([])
+    setInvoices([])
+    setComplaints([])
+    setComplaintDrafts({})
+    setLoadingAdminData(false)
+    setFeedbackMessage(null)
+    setErrorMessage(null)
+    localStorage.removeItem(SESSION_STORAGE_KEY)
+
+    if (message) {
+      setAuthError(message)
+    }
+  }
+
+  async function refreshAdminSession(): Promise<SessionResponse> {
+    if (refreshPromiseRef.current) {
+      return refreshPromiseRef.current
+    }
+
+    const refreshToken = session?.refreshToken
+    if (!refreshToken) {
+      throw new Error('Sessão expirada. Faça login novamente.')
+    }
+
+    const refreshPromise = (async () => {
+      const refreshed = await apiRequest<SessionResponse>('/v1/auth/refresh', {
+        method: 'POST',
+        body: JSON.stringify({ refreshToken }),
+      })
+
+      if (refreshed.session.user.role !== 'admin') {
+        throw new Error('Sessão renovada sem privilégios administrativos.')
+      }
+
+      setSession(refreshed)
+      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(refreshed))
+      return refreshed
+    })()
+
+    refreshPromiseRef.current = refreshPromise
+
+    try {
+      return await refreshPromise
+    } finally {
+      if (refreshPromiseRef.current === refreshPromise) {
+        refreshPromiseRef.current = null
+      }
+    }
+  }
+
+  async function apiRequestWithAdminAuth<T>(path: string, init: RequestInit = {}): Promise<T> {
+    if (!session?.accessToken) {
+      throw new Error('Sessão administrativa indisponível. Faça login novamente.')
+    }
+
+    try {
+      return await apiRequest<T>(path, init, session.accessToken)
+    } catch (error) {
+      if (!(error instanceof ApiRequestError) || error.status !== 401) {
+        throw error
+      }
+
+      let refreshed: SessionResponse
+      try {
+        refreshed = await refreshAdminSession()
+      } catch {
+        clearAuthenticatedState('Sessão expirada. Faça login novamente.')
+        throw new Error('Sessão expirada. Faça login novamente.')
+      }
+
+      try {
+        return await apiRequest<T>(path, init, refreshed.accessToken)
+      } catch (retryError) {
+        if (retryError instanceof ApiRequestError && retryError.status === 401) {
+          clearAuthenticatedState('Sessão expirada. Faça login novamente.')
+          throw new Error('Sessão expirada. Faça login novamente.')
+        }
+        throw retryError
+      }
+    }
+  }
+
+  async function loadAdminData(): Promise<void> {
     setLoadingAdminData(true)
     setErrorMessage(null)
 
     try {
       const [plansResponse, subscriptionsResponse, invoicesResponse, complaintsResponse] = await Promise.all([
-        apiRequest<{ plans: Plan[] }>('/v1/admin/plans', { method: 'GET' }, accessToken),
-        apiRequest<{ subscriptions: Subscription[] }>('/v1/admin/subscriptions', { method: 'GET' }, accessToken),
-        apiRequest<{ invoices: Invoice[] }>('/v1/admin/invoices', { method: 'GET' }, accessToken),
-        apiRequest<{ complaints: Complaint[] }>('/v1/admin/complaints', { method: 'GET' }, accessToken),
+        apiRequestWithAdminAuth<{ plans: Plan[] }>('/v1/admin/plans', { method: 'GET' }),
+        apiRequestWithAdminAuth<{ subscriptions: Subscription[] }>('/v1/admin/subscriptions', { method: 'GET' }),
+        apiRequestWithAdminAuth<{ invoices: Invoice[] }>('/v1/admin/invoices', { method: 'GET' }),
+        apiRequestWithAdminAuth<{ complaints: Complaint[] }>('/v1/admin/complaints', { method: 'GET' }),
       ])
 
       setPlans(plansResponse.plans)
@@ -254,25 +350,18 @@ function App() {
   }
 
   function handleSignOut(): void {
-    setSession(null)
-    setPlans([])
-    setSubscriptions([])
-    setInvoices([])
-    setComplaints([])
-    localStorage.removeItem(SESSION_STORAGE_KEY)
+    setAuthError(null)
+    clearAuthenticatedState()
   }
 
   async function handleCreatePlan(event: React.FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
-    if (!token) {
-      return
-    }
 
     setErrorMessage(null)
     setFeedbackMessage(null)
 
     try {
-      const created = await apiRequest<Plan>(
+      const created = await apiRequestWithAdminAuth<Plan>(
         '/v1/admin/plans',
         {
           method: 'POST',
@@ -284,7 +373,6 @@ function App() {
             interval: newPlan.interval,
           }),
         },
-        token,
       )
 
       setPlans((current) => [created, ...current])
@@ -302,27 +390,22 @@ function App() {
   }
 
   async function handleSubscriptionAction(subscriptionId: string, action: 'renew' | 'cancel' | 'status', status?: SubscriptionStatus): Promise<void> {
-    if (!token) {
-      return
-    }
-
     setErrorMessage(null)
     setFeedbackMessage(null)
 
     try {
       let updated: Subscription
       if (action === 'renew') {
-        updated = await apiRequest<Subscription>(`/v1/admin/subscriptions/${subscriptionId}/renew`, { method: 'POST' }, token)
+        updated = await apiRequestWithAdminAuth<Subscription>(`/v1/admin/subscriptions/${subscriptionId}/renew`, { method: 'POST' })
       } else if (action === 'cancel') {
-        updated = await apiRequest<Subscription>(`/v1/admin/subscriptions/${subscriptionId}/cancel`, { method: 'POST' }, token)
+        updated = await apiRequestWithAdminAuth<Subscription>(`/v1/admin/subscriptions/${subscriptionId}/cancel`, { method: 'POST' })
       } else {
-        updated = await apiRequest<Subscription>(
+        updated = await apiRequestWithAdminAuth<Subscription>(
           `/v1/admin/subscriptions/${subscriptionId}/status`,
           {
             method: 'PATCH',
             body: JSON.stringify({ status }),
           },
-          token,
         )
       }
 
@@ -338,14 +421,10 @@ function App() {
   }
 
   async function handleMarkInvoicePaid(invoiceId: string): Promise<void> {
-    if (!token) {
-      return
-    }
-
     setErrorMessage(null)
     setFeedbackMessage(null)
     try {
-      const updated = await apiRequest<Invoice>(`/v1/admin/invoices/${invoiceId}/mark-paid`, { method: 'POST' }, token)
+      const updated = await apiRequestWithAdminAuth<Invoice>(`/v1/admin/invoices/${invoiceId}/mark-paid`, { method: 'POST' })
       setInvoices((current) => current.map((invoice) => (invoice.invoiceId === invoiceId ? updated : invoice)))
       setFeedbackMessage('Invoice marcada como paga.')
     } catch (error) {
@@ -403,10 +482,6 @@ function App() {
   }
 
   async function handleUpdateComplaint(complaint: Complaint): Promise<void> {
-    if (!token) {
-      return
-    }
-
     const draft = complaintDrafts[complaint.complaintId]
     if (!draft) {
       return
@@ -415,7 +490,7 @@ function App() {
     setErrorMessage(null)
     setFeedbackMessage(null)
     try {
-      const updated = await apiRequest<Complaint>(
+      const updated = await apiRequestWithAdminAuth<Complaint>(
         `/v1/admin/complaints/${complaint.complaintId}`,
         {
           method: 'PATCH',
@@ -424,7 +499,6 @@ function App() {
             adminResponse: draft.adminResponse,
           }),
         },
-        token,
       )
 
       setComplaints((current) =>
@@ -560,16 +634,26 @@ function App() {
         </Card>
       </section>
 
-      <section className="mx-auto mt-4 max-w-7xl space-y-4 px-4 md:px-8">
-        <div className="flex flex-wrap gap-2">
-          <TabButton isActive={activeTab === 'billing'} label="Subscriptions & Pagamentos" onClick={() => setActiveTab('billing')} />
-          <TabButton isActive={activeTab === 'password'} label="Reset de Senha" onClick={() => setActiveTab('password')} />
-          <TabButton isActive={activeTab === 'complaints'} label="Reclamações" onClick={() => setActiveTab('complaints')} />
-          <Button variant="ghost" size="sm" onClick={() => token && void loadAdminData(token)}>
-            <RefreshCcw className="mr-2 size-4" />
-            Recarregar
-          </Button>
-        </div>
+      <section className="mx-auto mt-4 grid max-w-7xl gap-4 px-4 md:grid-cols-[260px_1fr] md:px-8">
+        <aside className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Menu</CardTitle>
+              <CardDescription>Navegue entre as funcionalidades administrativas.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              <SidebarMenuButton isActive={activeTab === 'billing'} label="Subscriptions & Pagamentos" onClick={() => setActiveTab('billing')} />
+              <SidebarMenuButton isActive={activeTab === 'password'} label="Reset de Senha" onClick={() => setActiveTab('password')} />
+              <SidebarMenuButton isActive={activeTab === 'complaints'} label="Reclamações" onClick={() => setActiveTab('complaints')} />
+              <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => void loadAdminData()}>
+                <RefreshCcw className="mr-2 size-4" />
+                Recarregar
+              </Button>
+            </CardContent>
+          </Card>
+        </aside>
+
+        <div className="space-y-4">
 
         {feedbackMessage ? (
           <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
@@ -758,7 +842,7 @@ function App() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="reset-password">Nova senha</Label>
-                    <Input id="reset-password" type="password" value={resetForm.newPassword} onChange={(event) => setResetForm((current) => ({ ...current, newPassword: event.target.value }))} required minLength={8} />
+                    <Input id="reset-password" type="password" autoComplete="new-password" value={resetForm.newPassword} onChange={(event) => setResetForm((current) => ({ ...current, newPassword: event.target.value }))} required minLength={8} />
                   </div>
                   <Button type="submit">Redefinir senha</Button>
                 </form>
@@ -831,6 +915,7 @@ function App() {
             </CardContent>
           </Card>
         ) : null}
+        </div>
       </section>
     </main>
   )
