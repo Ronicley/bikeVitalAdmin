@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, AlertCircle, CheckCircle2, CreditCard, Download, LogOut, MessageSquareWarning, RefreshCcw, Search, ShieldCheck, Users } from 'lucide-react'
+import { Activity, AlertCircle, CheckCircle2, CreditCard, Download, KeyRound, LogOut, MessageSquareWarning, PanelLeftClose, PanelLeftOpen, RefreshCcw, Search, ShieldCheck, Users } from 'lucide-react'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
@@ -195,16 +195,18 @@ function downloadCsv(filename: string, rows: string[][]): void {
   URL.revokeObjectURL(url)
 }
 
-function SidebarMenuButton(props: { isActive: boolean; label: string; onClick: () => void }) {
+function SidebarMenuButton(props: { isActive: boolean; label: string; collapsed: boolean; icon: React.ReactNode; onClick: () => void }) {
   return (
     <Button
       variant={props.isActive ? 'default' : 'ghost'}
       size="sm"
       onClick={props.onClick}
-      className="w-full justify-start"
+      className={props.collapsed ? 'h-11 w-full justify-center px-0' : 'h-11 w-full justify-start'}
       type="button"
+      title={props.label}
     >
-      {props.label}
+      <span className={props.collapsed ? '' : 'mr-2'}>{props.icon}</span>
+      {props.collapsed ? <span className="sr-only">{props.label}</span> : props.label}
     </Button>
   )
 }
@@ -213,6 +215,7 @@ function App() {
   const [session, setSession] = useState<SessionResponse | null>(null)
   const refreshPromiseRef = useRef<Promise<SessionResponse> | null>(null)
   const [activeTab, setActiveTab] = useState<'billing' | 'password' | 'complaints' | 'active-users'>('billing')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authError, setAuthError] = useState<string | null>(null)
@@ -253,6 +256,32 @@ function App() {
   const [selectedActiveUserId, setSelectedActiveUserId] = useState<string | null>(null)
 
   const token = session?.accessToken
+
+  const sidebarItems = useMemo(
+    () => [
+      {
+        id: 'billing' as const,
+        label: 'Subscriptions & Pagamentos',
+        icon: <CreditCard className="size-4" />,
+      },
+      {
+        id: 'password' as const,
+        label: 'Reset de Senha',
+        icon: <KeyRound className="size-4" />,
+      },
+      {
+        id: 'complaints' as const,
+        label: 'Reclamações',
+        icon: <MessageSquareWarning className="size-4" />,
+      },
+      {
+        id: 'active-users' as const,
+        label: 'Usuários Ativos',
+        icon: <Users className="size-4" />,
+      },
+    ],
+    [],
+  )
 
   const summary = useMemo(() => {
     return {
@@ -771,69 +800,118 @@ function App() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-100 pb-10">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-4 px-4 py-4 md:px-8">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">BikeVital Operations</p>
-            <h1 className="text-2xl font-semibold text-slate-900">Painel Administrativo</h1>
-            <p className="text-sm text-slate-500">Logado como {session.session.user.email ?? session.session.user.id}</p>
+    <main className="min-h-screen bg-slate-100 md:flex">
+      <aside className={`border-b border-slate-200 bg-slate-950 text-slate-100 transition-all duration-200 md:sticky md:top-0 md:h-screen md:border-b-0 md:border-r ${sidebarCollapsed ? 'md:w-24' : 'md:w-80'}`}>
+        <div className="flex h-full flex-col">
+          <div className="flex items-start justify-between gap-3 border-b border-white/10 px-4 py-5">
+            <div className={sidebarCollapsed ? 'hidden' : 'min-w-0'}>
+              <p className="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-300">BikeVital Operations</p>
+              <h1 className="mt-2 text-xl font-semibold text-white">Painel Administrativo</h1>
+              <p className="mt-1 text-sm text-slate-400">{session.session.user.email ?? session.session.user.id}</p>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              type="button"
+              onClick={() => setSidebarCollapsed((current) => !current)}
+              className="h-10 w-10 shrink-0 border border-white/10 px-0 text-slate-100 hover:bg-white/10 hover:text-white"
+              title={sidebarCollapsed ? 'Expandir menu lateral' : 'Ocultar menu lateral'}
+            >
+              {sidebarCollapsed ? <PanelLeftOpen className="size-4" /> : <PanelLeftClose className="size-4" />}
+            </Button>
           </div>
-          <Button variant="outline" onClick={handleSignOut}>
-            <LogOut className="mr-2 size-4" />
-            Sair
-          </Button>
-        </div>
-      </header>
 
-      <section className="mx-auto mt-6 grid max-w-7xl gap-4 px-4 md:grid-cols-4 md:px-8">
-        <Card className="bg-emerald-50 border-emerald-200">
-          <CardContent className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-emerald-700">Planos</p>
-            <p className="text-2xl font-semibold text-emerald-950">{summary.plans}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-slate-500">Subscriptions</p>
-            <p className="text-2xl font-semibold text-slate-900">{summary.subscriptions}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-slate-500">Invoices em aberto</p>
-            <p className="text-2xl font-semibold text-slate-900">{summary.invoicesOpen}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="space-y-1">
-            <p className="text-xs uppercase tracking-wide text-slate-500">Reclamações abertas</p>
-            <p className="text-2xl font-semibold text-slate-900">{summary.complaintsOpen}</p>
-          </CardContent>
-        </Card>
-      </section>
-
-      <section className="mx-auto mt-4 grid max-w-7xl gap-4 px-4 md:grid-cols-[260px_1fr] md:px-8">
-        <aside className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Menu</CardTitle>
-              <CardDescription>Navegue entre as funcionalidades administrativas.</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-2">
-              <SidebarMenuButton isActive={activeTab === 'billing'} label="Subscriptions & Pagamentos" onClick={() => setActiveTab('billing')} />
-              <SidebarMenuButton isActive={activeTab === 'password'} label="Reset de Senha" onClick={() => setActiveTab('password')} />
-              <SidebarMenuButton isActive={activeTab === 'complaints'} label="Reclamações" onClick={() => setActiveTab('complaints')} />
-              <SidebarMenuButton isActive={activeTab === 'active-users'} label="Usuários Ativos" onClick={() => setActiveTab('active-users')} />
-              <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => void loadAdminData()}>
-                <RefreshCcw className="mr-2 size-4" />
-                Recarregar
+          <div className="flex-1 space-y-6 px-3 py-4">
+            <div className="space-y-2">
+              {!sidebarCollapsed ? <p className="px-2 text-xs font-medium uppercase tracking-[0.22em] text-slate-500">Menu</p> : null}
+              {sidebarItems.map((item) => (
+                <SidebarMenuButton
+                  key={item.id}
+                  isActive={activeTab === item.id}
+                  label={item.label}
+                  collapsed={sidebarCollapsed}
+                  icon={item.icon}
+                  onClick={() => setActiveTab(item.id)}
+                />
+              ))}
+              <Button
+                variant="outline"
+                size="sm"
+                className={sidebarCollapsed ? 'h-11 w-full justify-center px-0 border-white/10 bg-transparent text-slate-100 hover:bg-white/10 hover:text-white' : 'h-11 w-full justify-start border-white/10 bg-transparent text-slate-100 hover:bg-white/10 hover:text-white'}
+                onClick={() => void loadAdminData()}
+                title="Recarregar dados"
+              >
+                <RefreshCcw className={sidebarCollapsed ? 'size-4' : 'mr-2 size-4'} />
+                {sidebarCollapsed ? <span className="sr-only">Recarregar</span> : 'Recarregar'}
               </Button>
+            </div>
+
+            {!sidebarCollapsed ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <p className="text-sm font-medium text-white">Navegação lateral</p>
+                <p className="mt-2 text-sm text-slate-400">Use o botão no topo para recolher ou expandir o menu sem perder o contexto operacional.</p>
+              </div>
+            ) : null}
+          </div>
+
+          <div className="border-t border-white/10 p-3">
+            <Button
+              variant="ghost"
+              onClick={handleSignOut}
+              className={sidebarCollapsed ? 'h-11 w-full justify-center px-0 text-slate-100 hover:bg-white/10 hover:text-white' : 'h-11 w-full justify-start text-slate-100 hover:bg-white/10 hover:text-white'}
+              title="Sair"
+            >
+              <LogOut className={sidebarCollapsed ? 'size-4' : 'mr-2 size-4'} />
+              {sidebarCollapsed ? <span className="sr-only">Sair</span> : 'Sair'}
+            </Button>
+          </div>
+        </div>
+      </aside>
+
+      <div className="min-w-0 flex-1 pb-10">
+        <header className="border-b border-slate-200 bg-white">
+          <div className="flex flex-wrap items-center justify-between gap-4 px-4 py-4 md:px-8">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-emerald-600">BikeVital Operations</p>
+              <h2 className="text-2xl font-semibold text-slate-900">Painel Administrativo</h2>
+              <p className="text-sm text-slate-500">Gestão operacional com navegação lateral recolhível.</p>
+            </div>
+            <Button variant="outline" type="button" onClick={() => setSidebarCollapsed((current) => !current)} className="md:hidden">
+              {sidebarCollapsed ? <PanelLeftOpen className="mr-2 size-4" /> : <PanelLeftClose className="mr-2 size-4" />}
+              {sidebarCollapsed ? 'Expandir menu' : 'Ocultar menu'}
+            </Button>
+          </div>
+        </header>
+
+        <section className="mx-auto mt-6 grid max-w-7xl gap-4 px-4 md:grid-cols-4 md:px-8">
+          <Card className="border-emerald-200 bg-emerald-50">
+            <CardContent className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-emerald-700">Planos</p>
+              <p className="text-2xl font-semibold text-emerald-950">{summary.plans}</p>
             </CardContent>
           </Card>
-        </aside>
+          <Card>
+            <CardContent className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Subscriptions</p>
+              <p className="text-2xl font-semibold text-slate-900">{summary.subscriptions}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Invoices em aberto</p>
+              <p className="text-2xl font-semibold text-slate-900">{summary.invoicesOpen}</p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="space-y-1">
+              <p className="text-xs uppercase tracking-wide text-slate-500">Reclamações abertas</p>
+              <p className="text-2xl font-semibold text-slate-900">{summary.complaintsOpen}</p>
+            </CardContent>
+          </Card>
+        </section>
 
-        <div className="space-y-4">
+        <section className="mx-auto mt-4 max-w-7xl px-4 md:px-8">
+          <div className="space-y-4">
 
         {feedbackMessage ? (
           <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
@@ -1315,8 +1393,9 @@ function App() {
             </div>
           </div>
         ) : null}
-        </div>
-      </section>
+          </div>
+        </section>
+      </div>
     </main>
   )
 }
