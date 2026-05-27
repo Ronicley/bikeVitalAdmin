@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, CreditCard, LogOut, MessageSquareWarning, RefreshCcw, ShieldCheck } from 'lucide-react'
+import { Activity, AlertCircle, CheckCircle2, CreditCard, Download, LogOut, MessageSquareWarning, RefreshCcw, Search, ShieldCheck, Users } from 'lucide-react'
 import { Badge } from './components/ui/badge'
 import { Button } from './components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './components/ui/card'
@@ -67,6 +67,34 @@ interface Complaint {
   updatedAt: string
 }
 
+interface ActiveUsersDashboardUser {
+  accountId: string
+  email: string | null
+  name: string | null
+  lastActivityAt: string
+  lastEventType: 'app_open' | 'session_restored' | 'sign_in' | 'screen_viewed' | 'ride_created' | 'bike_created'
+  eventCount: number
+  hasActiveSubscription: boolean
+  hasCurrentSession: boolean
+}
+
+interface ActiveUsersDashboardData {
+  generatedAt: string
+  periodDays: number
+  kpis: {
+    activeUsers: number
+    totalEvents: number
+    activeSubscribers: number
+    currentSessions: number
+  }
+  trend: Array<{
+    date: string
+    activeUsers: number
+    totalEvents: number
+  }>
+  users: ActiveUsersDashboardUser[]
+}
+
 interface ApiFailure {
   error?: {
     message?: string
@@ -131,6 +159,42 @@ function statusBadgeVariant(status: SubscriptionStatus | ComplaintStatus): 'succ
   return 'neutral'
 }
 
+function activityEventLabel(eventType: ActiveUsersDashboardUser['lastEventType']): string {
+  switch (eventType) {
+    case 'app_open':
+      return 'Abertura do app'
+    case 'session_restored':
+      return 'Sessão restaurada'
+    case 'sign_in':
+      return 'Login'
+    case 'screen_viewed':
+      return 'Tela visualizada'
+    case 'ride_created':
+      return 'Ride criada'
+    case 'bike_created':
+      return 'Bike criada'
+    default:
+      return eventType
+  }
+}
+
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString('pt-BR')
+}
+
+function downloadCsv(filename: string, rows: string[][]): void {
+  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
 function SidebarMenuButton(props: { isActive: boolean; label: string; onClick: () => void }) {
   return (
     <Button
@@ -148,7 +212,7 @@ function SidebarMenuButton(props: { isActive: boolean; label: string; onClick: (
 function App() {
   const [session, setSession] = useState<SessionResponse | null>(null)
   const refreshPromiseRef = useRef<Promise<SessionResponse> | null>(null)
-  const [activeTab, setActiveTab] = useState<'billing' | 'password' | 'complaints'>('billing')
+  const [activeTab, setActiveTab] = useState<'billing' | 'password' | 'complaints' | 'active-users'>('billing')
   const [authEmail, setAuthEmail] = useState('')
   const [authPassword, setAuthPassword] = useState('')
   const [authError, setAuthError] = useState<string | null>(null)
@@ -179,6 +243,14 @@ function App() {
   })
 
   const [complaintDrafts, setComplaintDrafts] = useState<Record<string, { status: ComplaintStatus; adminResponse: string }>>({})
+  const [activeUsersDashboard, setActiveUsersDashboard] = useState<ActiveUsersDashboardData | null>(null)
+  const [loadingActiveUsersDashboard, setLoadingActiveUsersDashboard] = useState(false)
+  const [activityWindowDays, setActivityWindowDays] = useState<7 | 30 | 90>(30)
+  const [activeUsersSearch, setActiveUsersSearch] = useState('')
+  const [onlySubscribers, setOnlySubscribers] = useState(false)
+  const [onlyCurrentSessions, setOnlyCurrentSessions] = useState(false)
+  const [autoRefreshDashboard, setAutoRefreshDashboard] = useState(true)
+  const [selectedActiveUserId, setSelectedActiveUserId] = useState<string | null>(null)
 
   const token = session?.accessToken
 
@@ -219,6 +291,7 @@ function App() {
     setSubscriptions([])
     setInvoices([])
     setComplaints([])
+    setActiveUsersDashboard(null)
     setComplaintDrafts({})
     setLoadingAdminData(false)
     setFeedbackMessage(null)
@@ -319,6 +392,112 @@ function App() {
     } finally {
       setLoadingAdminData(false)
     }
+  }
+
+  async function loadActiveUsersDashboard(periodDays = activityWindowDays): Promise<void> {
+    setLoadingActiveUsersDashboard(true)
+    setErrorMessage(null)
+
+    try {
+      const dashboard = await apiRequestWithAdminAuth<ActiveUsersDashboardData>(
+        `/v1/admin/telemetry/active-users?periodDays=${periodDays}&limit=100`,
+        { method: 'GET' },
+      )
+      setActiveUsersDashboard(dashboard)
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Falha ao carregar dashboard de usuários ativos.')
+    } finally {
+      setLoadingActiveUsersDashboard(false)
+    }
+  }
+
+  useEffect(() => {
+    if (!token || activeTab !== 'active-users') {
+      return
+    }
+
+    void loadActiveUsersDashboard(activityWindowDays)
+  }, [activeTab, activityWindowDays, token])
+
+  useEffect(() => {
+    if (!token || activeTab !== 'active-users' || !autoRefreshDashboard) {
+      return
+    }
+
+    const timer = window.setInterval(() => {
+      void loadActiveUsersDashboard(activityWindowDays)
+    }, 30000)
+
+    return () => {
+      window.clearInterval(timer)
+    }
+  }, [activeTab, activityWindowDays, autoRefreshDashboard, token])
+
+  const filteredActiveUsers = useMemo(() => {
+    if (!activeUsersDashboard) {
+      return []
+    }
+
+    const search = activeUsersSearch.trim().toLowerCase()
+    return activeUsersDashboard.users.filter((user) => {
+      if (onlySubscribers && !user.hasActiveSubscription) {
+        return false
+      }
+
+      if (onlyCurrentSessions && !user.hasCurrentSession) {
+        return false
+      }
+
+      if (!search) {
+        return true
+      }
+
+      return [user.name, user.email, user.accountId, activityEventLabel(user.lastEventType)]
+        .filter(Boolean)
+        .some((value) => String(value).toLowerCase().includes(search))
+    })
+  }, [activeUsersDashboard, activeUsersSearch, onlySubscribers, onlyCurrentSessions])
+
+  const selectedActiveUser = useMemo(() => {
+    if (!selectedActiveUserId) {
+      return filteredActiveUsers[0] ?? null
+    }
+
+    return filteredActiveUsers.find((user) => user.accountId === selectedActiveUserId) ?? filteredActiveUsers[0] ?? null
+  }, [filteredActiveUsers, selectedActiveUserId])
+
+  useEffect(() => {
+    if (!selectedActiveUser && selectedActiveUserId) {
+      setSelectedActiveUserId(null)
+    }
+  }, [selectedActiveUser, selectedActiveUserId])
+
+  const trendPeak = useMemo(() => {
+    if (!activeUsersDashboard) {
+      return 1
+    }
+
+    return Math.max(1, ...activeUsersDashboard.trend.map((item) => item.activeUsers))
+  }, [activeUsersDashboard])
+
+  function handleExportActiveUsersCsv(): void {
+    if (!filteredActiveUsers.length) {
+      return
+    }
+
+    downloadCsv(`bikevital-active-users-${activityWindowDays}d.csv`, [
+      ['accountId', 'name', 'email', 'lastActivityAt', 'lastEventType', 'eventCount', 'hasActiveSubscription', 'hasCurrentSession'],
+      ...filteredActiveUsers.map((user) => [
+        user.accountId,
+        user.name ?? '',
+        user.email ?? '',
+        user.lastActivityAt,
+        user.lastEventType,
+        String(user.eventCount),
+        String(user.hasActiveSubscription),
+        String(user.hasCurrentSession),
+      ]),
+    ])
   }
 
   async function handleAdminSignIn(event: React.FormEvent<HTMLFormElement>): Promise<void> {
@@ -645,6 +824,7 @@ function App() {
               <SidebarMenuButton isActive={activeTab === 'billing'} label="Subscriptions & Pagamentos" onClick={() => setActiveTab('billing')} />
               <SidebarMenuButton isActive={activeTab === 'password'} label="Reset de Senha" onClick={() => setActiveTab('password')} />
               <SidebarMenuButton isActive={activeTab === 'complaints'} label="Reclamações" onClick={() => setActiveTab('complaints')} />
+              <SidebarMenuButton isActive={activeTab === 'active-users'} label="Usuários Ativos" onClick={() => setActiveTab('active-users')} />
               <Button variant="outline" size="sm" className="w-full justify-start" onClick={() => void loadAdminData()}>
                 <RefreshCcw className="mr-2 size-4" />
                 Recarregar
@@ -914,6 +1094,226 @@ function App() {
               })}
             </CardContent>
           </Card>
+        ) : null}
+
+        {activeTab === 'active-users' ? (
+          <div className="space-y-4">
+            <Card className="border-sky-200 bg-[linear-gradient(135deg,#ecfeff_0%,#eff6ff_55%,#f8fafc_100%)]">
+              <CardHeader className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <CardTitle className="flex items-center gap-2 text-slate-950"><Users className="size-5 text-sky-700" />Dashboard de Usuários Ativos</CardTitle>
+                  <CardDescription>
+                    Visão combinada por atividade real do app, assinatura ativa e sessão vigente. Última atualização em {activeUsersDashboard ? formatDateTime(activeUsersDashboard.generatedAt) : '--'}.
+                  </CardDescription>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm"
+                    value={activityWindowDays}
+                    onChange={(event) => setActivityWindowDays(Number(event.target.value) as 7 | 30 | 90)}
+                  >
+                    <option value={7}>Últimos 7 dias</option>
+                    <option value={30}>Últimos 30 dias</option>
+                    <option value={90}>Últimos 90 dias</option>
+                  </select>
+                  <Button variant="outline" type="button" onClick={() => void loadActiveUsersDashboard()}>
+                    <RefreshCcw className="mr-2 size-4" />Atualizar agora
+                  </Button>
+                  <Button variant="secondary" type="button" onClick={handleExportActiveUsersCsv} disabled={filteredActiveUsers.length === 0}>
+                    <Download className="mr-2 size-4" />Exportar CSV
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-xl border border-sky-200/80 bg-white/90 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Usuários ativos</p>
+                  <p className="mt-2 text-3xl font-semibold text-slate-950">{activeUsersDashboard?.kpis.activeUsers ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white/90 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Eventos</p>
+                  <p className="mt-2 text-3xl font-semibold text-slate-950">{activeUsersDashboard?.kpis.totalEvents ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-emerald-200 bg-white/90 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Assinantes ativos</p>
+                  <p className="mt-2 text-3xl font-semibold text-slate-950">{activeUsersDashboard?.kpis.activeSubscribers ?? 0}</p>
+                </div>
+                <div className="rounded-xl border border-violet-200 bg-white/90 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-slate-500">Sessões vigentes</p>
+                  <p className="mt-2 text-3xl font-semibold text-slate-950">{activeUsersDashboard?.kpis.currentSessions ?? 0}</p>
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="grid gap-4 xl:grid-cols-[1.35fr_0.95fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><Activity className="size-5 text-sky-700" />Tendência de atividade</CardTitle>
+                  <CardDescription>Usuários únicos ativos por dia na janela selecionada.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {loadingActiveUsersDashboard ? <p className="text-sm text-slate-500">Atualizando dashboard...</p> : null}
+                  {!activeUsersDashboard ? <p className="text-sm text-slate-500">Abra a aba para carregar os dados de atividade.</p> : null}
+                  {activeUsersDashboard ? (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                        {activeUsersDashboard.trend.slice(-4).map((item) => (
+                          <div key={item.date} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                            <p className="text-xs uppercase tracking-wide text-slate-500">{new Date(item.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</p>
+                            <p className="mt-2 text-xl font-semibold text-slate-950">{item.activeUsers}</p>
+                            <p className="text-xs text-slate-500">{item.totalEvents} eventos</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="flex h-52 items-end gap-2 rounded-xl border border-slate-200 bg-white p-4">
+                        {activeUsersDashboard.trend.map((item) => (
+                          <div key={item.date} className="flex min-w-0 flex-1 flex-col items-center gap-2">
+                            <div
+                              className="w-full rounded-t-md bg-gradient-to-t from-sky-600 to-cyan-400"
+                              style={{ height: `${Math.max(10, Math.round((item.activeUsers / trendPeak) * 100))}%` }}
+                              title={`${item.activeUsers} usuários ativos em ${item.date}`}
+                            />
+                            <span className="text-[10px] text-slate-500">{new Date(item.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Filtros operacionais</CardTitle>
+                  <CardDescription>Refine a leitura para operação, suporte e growth.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="active-users-search">Buscar usuário</Label>
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        id="active-users-search"
+                        className="pl-9"
+                        value={activeUsersSearch}
+                        onChange={(event) => setActiveUsersSearch(event.target.value)}
+                        placeholder="Nome, email, conta ou evento"
+                      />
+                    </div>
+                  </div>
+                  <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    <span>Somente assinantes ativos</span>
+                    <input type="checkbox" checked={onlySubscribers} onChange={(event) => setOnlySubscribers(event.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    <span>Somente com sessão vigente</span>
+                    <input type="checkbox" checked={onlyCurrentSessions} onChange={(event) => setOnlyCurrentSessions(event.target.checked)} />
+                  </label>
+                  <label className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                    <span>Auto refresh a cada 30s</span>
+                    <input type="checkbox" checked={autoRefreshDashboard} onChange={(event) => setAutoRefreshDashboard(event.target.checked)} />
+                  </label>
+                  <div className="rounded-lg border border-dashed border-slate-300 bg-white p-3 text-sm text-slate-600">
+                    <p className="font-medium text-slate-900">Resultado filtrado</p>
+                    <p className="mt-1">{filteredActiveUsers.length} usuário(s) no recorte atual.</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[1.45fr_0.85fr]">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Lista de usuários</CardTitle>
+                  <CardDescription>Ordenada por atividade mais recente dentro da janela selecionada.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {filteredActiveUsers.length === 0 ? <p className="text-sm text-slate-500">Nenhum usuário encontrado com os filtros atuais.</p> : null}
+                  {filteredActiveUsers.map((user) => (
+                    <button
+                      key={user.accountId}
+                      type="button"
+                      className={`grid w-full gap-3 rounded-xl border p-4 text-left transition ${selectedActiveUser?.accountId === user.accountId ? 'border-sky-400 bg-sky-50/80' : 'border-slate-200 bg-white hover:border-slate-300'}`}
+                      onClick={() => setSelectedActiveUserId(user.accountId)}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="font-medium text-slate-950">{user.name ?? 'Usuário sem nome'}</p>
+                          <p className="text-sm text-slate-600">{user.email ?? user.accountId}</p>
+                          <p className="text-xs text-slate-500">Conta {user.accountId}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Badge variant={user.hasActiveSubscription ? 'success' : 'neutral'}>{user.hasActiveSubscription ? 'assinante ativo' : 'sem assinatura ativa'}</Badge>
+                          <Badge variant={user.hasCurrentSession ? 'info' : 'neutral'}>{user.hasCurrentSession ? 'sessão vigente' : 'sem sessão atual'}</Badge>
+                        </div>
+                      </div>
+                      <div className="grid gap-2 text-sm text-slate-600 md:grid-cols-3">
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Última atividade</p>
+                          <p>{formatDateTime(user.lastActivityAt)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Último evento</p>
+                          <p>{activityEventLabel(user.lastEventType)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Eventos na janela</p>
+                          <p>{user.eventCount}</p>
+                        </div>
+                      </div>
+                    </button>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle>Detalhe do usuário</CardTitle>
+                  <CardDescription>Resumo rápido do item selecionado para suporte e leitura operacional.</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {!selectedActiveUser ? <p className="text-sm text-slate-500">Selecione um usuário na lista para ver o detalhe.</p> : null}
+                  {selectedActiveUser ? (
+                    <div className="space-y-4">
+                      <div>
+                        <p className="text-lg font-semibold text-slate-950">{selectedActiveUser.name ?? 'Usuário sem nome'}</p>
+                        <p className="text-sm text-slate-600">{selectedActiveUser.email ?? 'Sem email público'}</p>
+                        <p className="text-xs text-slate-500">{selectedActiveUser.accountId}</p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Última atividade</p>
+                          <p className="mt-1 text-sm font-medium text-slate-900">{formatDateTime(selectedActiveUser.lastActivityAt)}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Último evento</p>
+                          <p className="mt-1 text-sm font-medium text-slate-900">{activityEventLabel(selectedActiveUser.lastEventType)}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Eventos no período</p>
+                          <p className="mt-1 text-sm font-medium text-slate-900">{selectedActiveUser.eventCount}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                          <p className="text-xs uppercase tracking-wide text-slate-400">Status operacional</p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <Badge variant={selectedActiveUser.hasActiveSubscription ? 'success' : 'neutral'}>{selectedActiveUser.hasActiveSubscription ? 'assinatura ativa' : 'sem assinatura ativa'}</Badge>
+                            <Badge variant={selectedActiveUser.hasCurrentSession ? 'info' : 'neutral'}>{selectedActiveUser.hasCurrentSession ? 'sessão vigente' : 'sessão encerrada'}</Badge>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="rounded-xl border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-600">
+                        <p className="font-medium text-slate-900">Leitura operacional</p>
+                        <p className="mt-2">
+                          {selectedActiveUser.hasCurrentSession
+                            ? 'Usuário potencialmente online agora. Bom candidato para suporte proativo ou observação de uso ao vivo.'
+                            : 'Usuário sem sessão atual, mas com atividade registrada na janela. Útil para leitura de retenção e recência.'}
+                        </p>
+                      </div>
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </div>
+          </div>
         ) : null}
         </div>
       </section>
