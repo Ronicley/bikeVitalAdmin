@@ -22,7 +22,9 @@ O deploy usa a action oficial [Deploy on Hostinger VPS](https://github.com/marke
 - Porta 80 liberada no firewall
 - (Opcional) DNS apontando para o IP da VPS e TLS no host (Certbot/reverse proxy)
 
-### GitHub — Secrets and variables → Actions
+### GitHub — Environment `production`
+
+O workflow usa o environment **production** (`Settings → Environments → production`):
 
 | Tipo | Nome | Descrição |
 |------|------|-----------|
