@@ -1,73 +1,62 @@
-# React + TypeScript + Vite
+# Bike Vital Admin
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Painel administrativo React + Vite para o Bike Vital.
 
-Currently, two official plugins are available:
+## Desenvolvimento local
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
-
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+cp .env.example .env
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+A app sobe em `http://localhost:9001`. Configure `VITE_API_BASE_URL` no `.env` para apontar à API (padrão: `http://localhost:9000`).
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Deploy na Hostinger (Docker + GitHub Actions)
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+O deploy usa a action oficial [Deploy on Hostinger VPS](https://github.com/marketplace/actions/deploy-on-hostinger-vps): push na branch `main` (ou execução manual) envia o `docker-compose.yml` para a VPS, faz build da imagem e sobe o Nginx na porta 80.
+
+### Pré-requisitos na VPS
+
+- Docker e Docker Compose instalados
+- Porta 80 liberada no firewall
+- (Opcional) DNS apontando para o IP da VPS e TLS no host (Certbot/reverse proxy)
+
+### GitHub — Secrets and variables → Actions
+
+| Tipo | Nome | Descrição |
+|------|------|-----------|
+| Secret | `HOSTINGER_API_KEY` | API key do painel Hostinger |
+| Variable | `HOSTINGER_VM_ID` | ID numérico da VPS (ex.: `srv123456.hstgr.cloud` → `123456`) |
+| Variable | `VITE_API_BASE_URL` | URL pública da API em produção (HTTPS). Embutida no build do Vite. |
+
+Exemplos de `VITE_API_BASE_URL` (API no mesmo ecossistema de domínio):
+
+- `https://api.seudominio.com`
+- `https://seudominio.com` (se a API estiver na raiz e o admin em outro host)
+
+A API precisa permitir CORS a partir da origem onde o admin é servido.
+
+### Branch `main`
+
+O workflow dispara apenas em `main`. Se o repositório ainda usa `master`:
+
+```bash
+git branch -m master main
+git push -u origin main
 ```
+
+Defina `main` como default branch no GitHub.
+
+### Teste local com Docker
+
+```bash
+docker compose build --build-arg VITE_API_BASE_URL=https://api.exemplo.com
+docker compose up
+```
+
+Abra `http://localhost`.
+
+### Redeploy manual
+
+No GitHub: **Actions** → **Deploy to Hostinger** → **Run workflow**.
